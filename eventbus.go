@@ -25,7 +25,7 @@ import (
 	"github.com/google/uuid"
 
 	eh "github.com/looplab/eventhorizon"
-	stan "github.com/nats-io/go-nats-streaming"
+	stan "github.com/nats-io/stan.go"
 )
 
 // ErrCouldNotMarshalEvent is when an event could not be marshaled into BSON.
