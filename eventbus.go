@@ -22,9 +22,10 @@ import (
 	"time"
 
 	"github.com/globalsign/mgo/bson"
+	"github.com/google/uuid"
 
 	eh "github.com/looplab/eventhorizon"
-	"github.com/nats-io/go-nats-streaming"
+	stan "github.com/nats-io/go-nats-streaming"
 )
 
 // ErrCouldNotMarshalEvent is when an event could not be marshaled into BSON.
@@ -59,7 +60,7 @@ type EventBus struct {
 	subjectPrefix string
 	registered    map[eh.EventHandlerType]struct{}
 	registeredMu  sync.RWMutex
-	errCh         chan Error
+	errCh         chan eh.EventBusError
 }
 
 func NewEventBus(nc stan.Conn, subjectPrefix string) (*EventBus, error) {
@@ -67,7 +68,7 @@ func NewEventBus(nc stan.Conn, subjectPrefix string) (*EventBus, error) {
 		conn:          nc,
 		subjectPrefix: subjectPrefix,
 		registered:    map[eh.EventHandlerType]struct{}{},
-		errCh:         make(chan Error, 100),
+		errCh:         make(chan eh.EventBusError, 100),
 	}, nil
 }
 
@@ -75,7 +76,7 @@ type Event struct {
 	EventType     eh.EventType
 	Timestamp     time.Time
 	AggregateType eh.AggregateType
-	AggregateID   eh.UUID
+	AggregateID   uuid.UUID
 	Version       int
 	Context       map[string]interface{}
 	RawData       *bson.Raw `bson:",omitempty"`
@@ -118,7 +119,7 @@ func (b *EventBus) PublishEvent(ctx context.Context, event eh.Event) error {
 func (b *EventBus) AddHandler(m eh.EventMatcher, h eh.EventHandler) {
 	_, err := b.subscription(m, h, false)
 	if err != nil {
-		b.errCh <- Error{Err: err}
+		b.errCh <- eh.EventBusError{Err: err}
 	}
 }
 
@@ -126,12 +127,12 @@ func (b *EventBus) AddHandler(m eh.EventMatcher, h eh.EventHandler) {
 func (b *EventBus) AddObserver(m eh.EventMatcher, h eh.EventHandler) {
 	_, err := b.subscription(m, h, true)
 	if err != nil {
-		b.errCh <- Error{Err: err}
+		b.errCh <- eh.EventBusError{Err: err}
 	}
 }
 
 // Errors returns an error channel where async handling errors are sent.
-func (b *EventBus) Errors() <-chan Error {
+func (b *EventBus) Errors() <-chan eh.EventBusError {
 	return b.errCh
 }
 
@@ -140,7 +141,7 @@ func (b *EventBus) newMessageHandler(matcher eh.EventMatcher, handler eh.EventHa
 		var e Event
 		if err := bson.Unmarshal(m.Data, &e); err != nil {
 			select {
-			case b.errCh <- Error{Err: ErrCouldNotUnmarshalEvent(err)}:
+			case b.errCh <- eh.EventBusError{Err: ErrCouldNotUnmarshalEvent(err)}:
 			default:
 			}
 			return
@@ -151,14 +152,14 @@ func (b *EventBus) newMessageHandler(matcher eh.EventMatcher, handler eh.EventHa
 			var err error
 			if data, err = eh.CreateEventData(e.EventType); err != nil {
 				select {
-				case b.errCh <- Error{Err: ErrCouldNotUnmarshalEvent(err)}:
+				case b.errCh <- eh.EventBusError{Err: ErrCouldNotUnmarshalEvent(err)}:
 				default:
 				}
 				return
 			}
 			if err := e.RawData.Unmarshal(data); err != nil {
 				select {
-				case b.errCh <- Error{Err: ErrCouldNotUnmarshalEvent(err)}:
+				case b.errCh <- eh.EventBusError{Err: ErrCouldNotUnmarshalEvent(err)}:
 				default:
 				}
 				return
@@ -176,7 +177,7 @@ func (b *EventBus) newMessageHandler(matcher eh.EventMatcher, handler eh.EventHa
 		// Notify all observers about the event.
 		if err := handler.HandleEvent(ctx, ehEvent); err != nil {
 			select {
-			case b.errCh <- Error{Err: fmt.Errorf("could not handle event (%s): %s", handler.HandlerType(), err.Error()), Ctx: ctx, Event: ehEvent}:
+			case b.errCh <- eh.EventBusError{Err: fmt.Errorf("could not handle event (%s): %s", handler.HandlerType(), err.Error()), Ctx: ctx, Event: ehEvent}:
 			default:
 			}
 			return
